@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Фин-трекер покупок</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--text:#1d2330;--muted:#6b7385;--line:#e3e6ec;--accent:#2f6fed;--ok:#1f9d55;--warn:#d97706;--bad:#d64545}
+@media (prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--text:#e8ebf2;--muted:#9099ad;--line:#2b3240;--accent:#5b8cff;--ok:#3ec27a;--warn:#f0a23b;--bad:#ef6b6b}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+.wrap{max-width:720px;margin:0 auto;padding:16px 14px 60px}
+h1{font-size:20px;margin:6px 0 14px}
+.tabs{display:flex;gap:8px;margin-bottom:14px}
+.tab{flex:1;padding:12px;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;font-size:15px;cursor:pointer}
+.tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+input,select,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text)}
+input,select{flex:1;min-width:110px}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:transparent;cursor:pointer;color:var(--muted)}
+button.danger{color:var(--bad);cursor:pointer;background:transparent}
+.cat-title{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:14px 0 6px}
+.item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;background:var(--card)}
+.item.pick{cursor:pointer}
+.item.pick:hover{border-color:var(--accent)}
+.item.done{opacity:.55}
+.item.done .nm{text-decoration:line-through}
+.badge{font-size:12px;padding:2px 8px;border-radius:20px;background:var(--bg);color:var(--muted);border:1px solid var(--line)}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
+.form{display:flex;gap:8px;flex-wrap:wrap;padding:10px;border:1px dashed var(--accent);border-radius:10px;margin:-2px 0 8px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.stat{background:var(--bg);border-radius:10px;padding:10px 12px}
+.stat b{display:block;font-size:20px}
+.stat span{font-size:12px;color:var(--muted)}
+.total{font-size:28px;font-weight:700;margin:2px 0 10px}
+.bar{height:8px;border-radius:6px;background:var(--line);overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;background:var(--accent)}
+.muted{color:var(--muted);font-size:13px}
+.empty{color:var(--muted);text-align:center;padding:18px 0}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🛒 Фин-трекер покупок</h1>
+  <div class="tabs">
+    <button class="tab active" data-tab="need">Список необходимого</button>
+    <button class="tab" data-tab="shop">Покупки в магазине</button>
+  </div>
+
+  <section id="need">
+    <div class="card">
+      <div class="row">
+        <input id="needName" placeholder="Что нужно купить (например, молоко)" autocomplete="off">
+        <select id="needCat"></select>
+        <button class="primary" id="needAdd">Добавить</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="newCat" placeholder="Новая категория (необязательно)">
+        <button class="ghost" id="newCatAdd">+ категория</button>
+      </div>
+    </div>
+    <div id="needList"></div>
+  </section>
+
+  <section id="shop" class="hidden">
+    <div class="card">
+      <input id="shopSearch" placeholder="Введите продукт (например, молоко)" autocomplete="off" style="width:100%">
+      <div id="suggest" style="margin-top:10px"></div>
+    </div>
+    <div class="card" id="summary"></div>
+    <div class="card">
+      <b>Куплено</b>
+      <div id="bought" style="margin-top:8px"></div>
+    </div>
+    <div class="row">
+      <button class="ghost" id="newTrip">Новый поход (сбросить)</button>
+    </div>
+  </section>
+</div>
+
+<script>
+const KEY = 'fintracker_v1';
+const DEFAULT_CATS = ['Химия','Заморозка','Полуфабрикаты','Макароны','Крупы','Прочее'];
+let S = load();
+let openId = null;      // expanded row in shop tab
+let openFree = false;   // expanded "outside the list" form
+
+function load(){
+  try{ const d = JSON.parse(localStorage.getItem(KEY)); if(d && d.cats) return d; }catch(e){}
+  return {cats:[...DEFAULT_CATS], needs:[], buys:[]};
+}
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+const $ = id => document.getElementById(id);
+const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(n) + ' ₸';
+const norm = s => s.trim().toLowerCase();
+
+// ---------- tabs ----------
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x===b));
+  $('need').classList.toggle('hidden', b.dataset.tab!=='need');
+  $('shop').classList.toggle('hidden', b.dataset.tab!=='shop');
+  render();
+});
+
+// ---------- need tab ----------
+function fillCats(){
+  const cur = $('needCat').value;
+  $('needCat').innerHTML = S.cats.map(c => `<option>${esc(c)}</option>`).join('');
+  if(S.cats.includes(cur)) $('needCat').value = cur;
+}
+function addNeed(){
+  const name = $('needName').value.trim();
+  if(!name) return;
+  S.needs.push({id:uid(), name, cat:$('needCat').value, done:false});
+  $('needName').value=''; save(); render(); $('needName').focus();
+}
+$('needAdd').onclick = addNeed;
+$('needName').onkeydown = e => { if(e.key==='Enter') addNeed(); };
+$('newCatAdd').onclick = () => {
+  const c = $('newCat').value.trim();
+  if(c && !S.cats.some(x => norm(x)===norm(c))) S.cats.push(c);
+  $('newCat').value=''; save(); fillCats(); $('needCat').value = c; render();
+};
+function renderNeed(){
+  fillCats();
+  const box = $('needList');
+  if(!S.needs.length){ box.innerHTML = '<div class="empty">Список пуст. Добавьте первый продукт.</div>'; return; }
+  const cats = [...new Set([...S.cats, ...S.needs.map(n=>n.cat)])];
+  box.innerHTML = cats.map(c => {
+    const items = S.needs.filter(n => n.cat===c);
+    if(!items.length) return '';
+    return `<div class="cat-title">${esc(c)} · ${items.length}</div>` + items.map(n => `
+      <div class="item ${n.done?'done':''}">
+        <span class="nm">${esc(n.name)}</span>
+        <span>${n.done?'<span class="badge ok">куплено</span>':''}
+        <button class="danger" onclick="delNeed('${n.id}')">✕</button></span>
+      </div>`).join('');
+  }).join('');
+}
+window.delNeed = id => { S.needs = S.needs.filter(n => n.id!==id); save(); render(); };
+
+// ---------- shop tab ----------
+$('shopSearch').oninput = () => { openId=null; openFree=false; renderSuggest(); };
+
+function renderSuggest(){
+  const q = norm($('shopSearch').value);
+  const list = S.needs.filter(n => !n.done && (!q || norm(n.name).includes(q)));
+  let h = '';
+  if(!list.length) h += `<div class="muted">${q?'В списке такого нет.':'Всё из списка куплено 🎉'}</div>`;
+  list.forEach(n => {
+    h += `<div class="item pick" onclick="openRow('${n.id}')"><span class="nm">${esc(n.name)}</span><span class="badge">${esc(n.cat)}</span></div>`;
+    if(openId===n.id) h += buyForm(n.id);
+  });
+  if(q){
+    h += `<div class="item pick" onclick="openFreeForm()"><span>➕ Добавить «${esc($('shopSearch').value.trim())}» вне списка</span></div>`;
+    if(openFree) h += buyForm('free');
+  }
+  $('suggest').innerHTML = h;
+  const first = document.querySelector('#suggest .form input'); if(first) first.focus();
+}
+function buyForm(id){
+  const cat = id==='free' ? `<select id="f_cat">${S.cats.map(c=>`<option>${esc(c)}</option>`).join('')}</select>` : '';
+  return `<div class="form" onclick="event.stopPropagation()">
+    <input id="f_qty" type="number" min="0" step="any" value="1" placeholder="Кол-во">
+    <input id="f_price" type="number" min="0" step="any" placeholder="Цена за 1 шт, ₸">
+    ${cat}
+    <button class="primary" onclick="addBuy('${id}')">Добавить</button>
+  </div>`;
+}
+window.openRow = id => { openId = openId===id ? null : id; openFree=false; renderSuggest(); };
+window.openFreeForm = () => { openFree = !openFree; openId=null; renderSuggest(); };
+window.addBuy = id => {
+  const qty = parseFloat($('f_qty').value), price = parseFloat($('f_price').value);
+  if(!(qty>0) || !(price>=0) || isNaN(price)){ alert('Укажите количество и цену'); return; }
+  if(id==='free'){
+    const name = $('shopSearch').value.trim();
+    S.buys.push({id:uid(), name, cat:$('f_cat').value, qty, price, needId:null, ts:Date.now()});
+  } else {
+    const n = S.needs.find(x => x.id===id);
+    n.done = true;
+    S.buys.push({id:uid(), name:n.name, cat:n.cat, qty, price, needId:id, ts:Date.now()});
+  }
+  openId=null; openFree=false; $('shopSearch').value=''; save(); render();
+};
+window.delBuy = id => {
+  const b = S.buys.find(x => x.id===id);
+  if(b && b.needId){ const n = S.needs.find(x => x.id===b.needId); if(n) n.done = false; }
+  S.buys = S.buys.filter(x => x.id!==id); save(); render();
+};
+$('newTrip').onclick = () => {
+  if(!confirm('Очистить купленное и вернуть все продукты в список «осталось купить»?')) return;
+  S.buys = []; S.needs.forEach(n => n.done=false); save(); render();
+};
+
+function renderSummary(){
+  const total = S.buys.reduce((s,b)=>s+b.qty*b.price,0);
+  const wanted = S.needs.length;
+  const boughtPlanned = S.needs.filter(n=>n.done).length;
+  const left = wanted - boughtPlanned;
+  const unplanned = S.buys.filter(b=>!b.needId);
+  const unplannedSum = unplanned.reduce((s,b)=>s+b.qty*b.price,0);
+  const pct = wanted ? Math.round(boughtPlanned/wanted*100) : 0;
+  const byCat = {};
+  S.buys.forEach(b => byCat[b.cat] = (byCat[b.cat]||0) + b.qty*b.price);
+  const cats = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  const max = cats.length ? cats[0][1] : 1;
+  const leftNames = S.needs.filter(n=>!n.done).map(n=>esc(n.name)).join(', ');
+  $('summary').innerHTML = `
+    <div class="muted">Итого потрачено</div>
+    <div class="total">${money(total)}</div>
+    <div class="grid">
+      <div class="stat"><b>${wanted}</b><span>хотел купить</span></div>
+      <div class="stat"><b style="color:var(--ok)">${boughtPlanned}</b><span>купил из списка (${pct}%)</span></div>
+      <div class="stat"><b style="color:var(--warn)">${left}</b><span>осталось купить</span></div>
+      <div class="stat"><b>${unplanned.length}</b><span>вне списка · ${money(unplannedSum)}</span></div>
+    </div>
+    <div class="bar" style="margin-top:12px"><i style="width:${pct}%;background:var(--ok)"></i></div>
+    ${left ? `<div class="muted" style="margin-top:8px">Осталось: ${leftNames}</div>` : ''}
+    ${cats.length ? `<div class="cat-title">Расходы по категориям</div>` + cats.map(([c,v]) =>
+      `<div style="margin-bottom:8px"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><span>${esc(c)}</span><b>${money(v)}</b></div>
+       <div class="bar"><i style="width:${v/max*100}%"></i></div></div>`).join('') : ''}`;
+}
+function renderBought(){
+  $('bought').innerHTML = S.buys.length ? S.buys.slice().reverse().map(b => `
+    <div class="item">
+      <span><span class="nm">${esc(b.name)}</span> <span class="muted">${b.qty} × ${money(b.price)}${b.needId?'':' · вне списка'}</span></span>
+      <span><b>${money(b.qty*b.price)}</b> <button class="danger" onclick="delBuy('${b.id}')">✕</button></span>
+    </div>`).join('') : '<div class="empty">Пока ничего не куплено</div>';
+}
+
+function render(){
+  renderNeed();
+  if(!$('shop').classList.contains('hidden')){ renderSuggest(); renderSummary(); renderBought(); }
+}
+render();
+</script>
+</body>
+</html>
