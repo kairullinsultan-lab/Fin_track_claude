@@ -79,6 +79,24 @@ button.danger{color:var(--bad);cursor:pointer;background:transparent}
       <button class="ghost" id="newTrip">Новый поход (сбросить)</button>
     </div>
   </section>
+
+  <div class="card" id="dataCard">
+    <b>Данные (JSON)</b>
+    <div class="muted" style="margin:4px 0 10px">Перенос между устройствами: скачайте файл на одном, загрузите на другом.</div>
+    <div class="row">
+      <button class="ghost" onclick="exportJSON('full')">⬇ Всё</button>
+      <button class="ghost" onclick="exportJSON('needs')">⬇ Список необходимого</button>
+      <button class="ghost" onclick="exportJSON('buys')">⬇ Покупки + аналитика</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <select id="impMode" style="flex:0 0 auto"><option value="merge">Объединить с текущими</option><option value="replace">Заменить текущие</option></select>
+      <button class="ghost" onclick="document.getElementById('impFile').click()">⬆ Загрузить файл</button>
+      <input type="file" id="impFile" accept=".json,application/json" class="hidden">
+    </div>
+    <textarea id="impText" placeholder="Или вставьте JSON сюда" rows="3" style="width:100%;margin-top:10px;font:inherit;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text)"></textarea>
+    <div class="row" style="margin-top:8px"><button class="primary" onclick="importText()">Импортировать вставленный JSON</button></div>
+    <div id="impMsg" class="muted" style="margin-top:8px"></div>
+  </div>
 </div>
 
 <script>
@@ -237,6 +255,79 @@ function render(){
   renderNeed();
   if(!$('shop').classList.contains('hidden')){ renderSuggest(); renderSummary(); renderBought(); }
 }
+// ---------- JSON export / import ----------
+function analytics(){
+  const total = S.buys.reduce((a,b)=>a+b.qty*b.price,0);
+  const bp = S.needs.filter(n=>n.done).length;
+  const un = S.buys.filter(b=>!b.needId);
+  const byCat = {};
+  S.buys.forEach(b => byCat[b.cat] = (byCat[b.cat]||0) + b.qty*b.price);
+  return {total, wanted:S.needs.length, boughtFromList:bp, left:S.needs.length-bp,
+    leftItems:S.needs.filter(n=>!n.done).map(n=>n.name),
+    unplannedCount:un.length, unplannedSum:un.reduce((a,b)=>a+b.qty*b.price,0), byCategory:byCat};
+}
+function exportJSON(type){
+  const out = {app:'fintracker', version:1, type, exportedAt:new Date().toISOString(), cats:S.cats};
+  if(type!=='buys') out.needs = S.needs;
+  if(type==='buys'){ out.buys = S.buys; out.analytics = analytics(); }
+  if(type==='full'){ out.buys = S.buys; out.analytics = analytics(); }
+  const blob = new Blob([JSON.stringify(out,null,2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'fintracker-'+type+'-'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+function msg(t,ok){ const m=$('impMsg'); m.textContent=t; m.style.color = ok?'var(--ok)':'var(--bad)'; }
+function applyImport(d){
+  if(!d || d.app!=='fintracker') throw new Error('Это не файл фин-трекера');
+  const replace = $('impMode').value==='replace';
+  const type = d.type;
+  let addN=0, addB=0;
+  if(Array.isArray(d.cats)) d.cats.forEach(c => { if(typeof c==='string' && !S.cats.some(x=>norm(x)===norm(c))) S.cats.push(c); });
+  if(type==='full' || type==='needs'){
+    if(!Array.isArray(d.needs)) throw new Error('В файле нет списка необходимого');
+    if(replace) S.needs = [];
+    d.needs.forEach(n => {
+      if(!n || !n.name) return;
+      const cat = n.cat || 'Прочее';
+      if(!S.cats.some(x=>x===cat)) S.cats.push(cat);
+      if(S.needs.some(x => x.id===n.id || (norm(x.name)===norm(n.name) && x.cat===cat))) return;
+      S.needs.push({id:n.id||uid(), name:String(n.name), cat, done:!!n.done}); addN++;
+    });
+  }
+  if(type==='full' || type==='buys'){
+    if(!Array.isArray(d.buys)) throw new Error('В файле нет покупок');
+    if(replace){ S.buys = []; if(type==='buys') S.needs.forEach(n => n.done=false); }
+    d.buys.forEach(b => {
+      if(!b || !b.name || !(b.qty>0) || !(b.price>=0)) return;
+      if(S.buys.some(x => x.id===b.id)) return;
+      const cat = b.cat || 'Прочее';
+      if(!S.cats.includes(cat)) S.cats.push(cat);
+      let needId = null;
+      const byId = b.needId && S.needs.find(n => n.id===b.needId);
+      if(byId){ needId = byId.id; byId.done = true; }
+      else {
+        const byName = S.needs.find(n => !n.done && norm(n.name)===norm(b.name));
+        if(byName){ needId = byName.id; byName.done = true; }
+      }
+      S.buys.push({id:b.id||uid(), name:String(b.name), cat, qty:+b.qty, price:+b.price, needId, ts:b.ts||Date.now()}); addB++;
+    });
+  }
+  save(); render();
+  msg('Готово: добавлено продуктов в список — '+addN+', покупок — '+addB, true);
+}
+function importText(){
+  try{ applyImport(JSON.parse($('impText').value)); $('impText').value=''; }
+  catch(e){ msg('Ошибка: '+e.message, false); }
+}
+$('impFile').onchange = e => {
+  const f = e.target.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = () => { try{ applyImport(JSON.parse(r.result)); }catch(err){ msg('Ошибка: '+err.message, false); } e.target.value=''; };
+  r.readAsText(f);
+};
+
 render();
 </script>
 </body>
